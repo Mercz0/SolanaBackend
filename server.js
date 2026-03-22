@@ -28,6 +28,13 @@ app.post('/api/event', async (req, res) => {
         });
 
         await newEvent.save();
+        console.log("-----------------------------------------");
+        console.table([{
+            ID: newEvent._id.toString().substring(0, 5),
+            Device: newEvent.deviceId,
+            Hash: newEvent.hash.substring(0, 10) + "...",
+            Status: newEvent.status
+        }]);
         res.status(201).json(newEvent);
     } catch (error) {
         res.status(500).json({ error: error.message });
