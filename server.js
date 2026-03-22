@@ -12,6 +12,7 @@ mongoose.connect('mongodb://127.0.0.1:27017/iot-guard')
     .then(() => console.log("✅ MongoDB Local Conectado (Mac M3 Power)"))
     .catch(err => console.error("❌ Error al conectar Mongo Local:", err));
 
+// RUTA PARA CREAR UN NUEVO EVENTO
 app.post('/api/event', async (req, res) => {
     try {
         const { deviceId, payload } = req.body;
@@ -46,6 +47,7 @@ app.post('/api/event', async (req, res) => {
     }
 });
 
+// RUTA PARA VERIFICAR LA INTEGRIDAD DE UN EVENTO
 app.get('/api/verify/:id', async (req, res) => {
     try {
         const event = await Event.findById(req.params.id);
@@ -71,4 +73,49 @@ app.get('/api/verify/:id', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-app.listen(3000, () => console.log(`Server listo en http://localhost:3000`));
+
+//Ruta para obtener todos los eventos
+app.get('/api/events', async (req, res) => {
+    try {
+        const events = await Event.find().sort({ timestamp: -1 });
+        res.json(events);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// RUTA PARA SIMULAR UN ATAQUE (HACKEO DE TEMPERATURA)
+app.put('/api/event/:id/attack', async (req, res) => {
+    try {
+        const { newTemperature } = req.body;
+        const event = await Event.findById(req.params.id);
+
+        if (!event) {
+            return res.status(404).json({ message: "Evento no encontrado" });
+        }
+
+        if (event.payload && event.payload.temp !== undefined) {
+
+            event.payload.temp = newTemperature !== undefined ? newTemperature : 99.9;
+
+            event.markModified('payload');
+
+            await event.save();
+
+            console.log(`¡ALERTA! El evento ${req.params.id} ha sido hackeado localmente.`);
+
+            res.json({
+                message: "¡Ataque simulado! La temperatura ha sido alterada en MongoDB.",
+                details: {
+                    originalHash: event.hash,
+                    newTemp: event.payload.temp
+                },
+                event
+            });
+        } else {
+            res.status(400).json({ message: "No se encontró el campo 'temp' en el payload." });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});app.listen(3000, () => console.log(`Server listo en http://localhost:3000`));

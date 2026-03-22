@@ -9,9 +9,9 @@ let payer;
 try {
     const secretKey = Uint8Array.from(JSON.parse(fs.readFileSync(secretKeyPath, 'utf-8')));
     payer = Keypair.fromSecretKey(secretKey);
-    console.log("✅ Llave cargada correctamente:", payer.publicKey.toBase58());
+    console.log("Llave cargada correctamente:", payer.publicKey.toBase58());
 } catch (e) {
-    console.error("❌ Error cargando secret.json");
+    console.error("Error cargando secret.json");
 }
 
 /**
@@ -19,7 +19,7 @@ try {
  */
 const sendHashToSolana = async (hash) => {
     try {
-        const myProgramId = new PublicKey("5spqT6JnBiG6WEJg8N1ibkW4kQqpYtpnFDsq6cUHCNLU");
+        const myProgramId = new PublicKey("Aw9SvAJ8v8BYR5z7pfGtdc55vDeZSfwGjprwDofRRUMz");
 
         const { blockhash } = await connection.getLatestBlockhash('confirmed');
 
@@ -40,7 +40,7 @@ const sendHashToSolana = async (hash) => {
         await connection.confirmTransaction(signature, 'confirmed');
         return signature;
     } catch (error) {
-        console.error("❌ Error en el proceso de Solana:", error);
+        console.error("Error en el proceso de Solana:", error);
         throw error;
     }
 };
@@ -55,15 +55,18 @@ const getHashFromSolana = async (signature) => {
             maxSupportedTransactionVersion: 0
         });
 
-        if (!tx) return null;
+        if (!tx || !tx.meta) {
+            console.warn("⚠Transacción no encontrada o sin metadatos para la firma:", signature);
+            return "No se encontró evidencia en Blockchain";
+        }
 
-        const logMessages = tx.meta.logMessages;
-        const customLog = logMessages.find(log => log.includes("✅ Hash Notariado exitosamente:"));
+        const logConHash = tx.meta.logMessages.find(log =>
+            log.includes("Hash Notariado") || log.includes("Program log: ")
+        );
 
-        return customLog;
+        return logConHash ? logConHash : "Log no encontrado";
     } catch (error) {
-        console.error("❌ Error recuperando de Solana:", error);
-        return null;
+        return "Error al conectar con la red de Solana";
     }
 };
 
