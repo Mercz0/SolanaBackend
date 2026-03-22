@@ -19,7 +19,7 @@ try {
  */
 const sendHashToSolana = async (hash) => {
     try {
-        const myProgramId = new PublicKey("Aw9SvAJ8v8BYR5z7pfGtdc55vDeZSfwGjprwDofRRUMz");
+        const myProgramId = new PublicKey("YpK3D3u67DK2fNnFEfVWpWy5XHaEovE833EgpPSQjqs");
 
         const { blockhash } = await connection.getLatestBlockhash('confirmed');
 
