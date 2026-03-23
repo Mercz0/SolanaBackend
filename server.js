@@ -3,119 +3,161 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const { generateHash } = require('./utils/security');
 const Event = require('./models/Event');
-const { sendHashToSolana } = require('./utils/solana');
+const {
+    updateTruckOnChain,
+    createTruckAccount,
+    getTruckStateFromSolana,
+    getTruckHistory
+} = require('./utils/solana');
+
 const app = express();
 app.use(express.json());
 app.use(cors());
 
 mongoose.connect('mongodb://127.0.0.1:27017/iot-guard')
-    .then(() => console.log("✅ MongoDB Local Conectado (Mac M3 Power)"))
-    .catch(err => console.error("❌ Error al conectar Mongo Local:", err));
+    .then(() => console.log("✅ MongoDB Conectado"))
+    .catch(err => console.error("❌ Error Mongo:", err));
 
-// RUTA PARA CREAR UN NUEVO EVENTO
+// Registro inicial del camión y creación de cuenta en Solana
+app.post('/api/fleet/register', async (req, res) => {
+    try {
+        const { truckId, driver, route } = req.body;
+        const truckPubkey = await createTruckAccount();
+        const payload = {
+            status: "READY",
+            location: { lat: 21.8823, lng: -102.2825 },
+            doorStatus: "CLOSED",
+            driver,
+            routeName: route,
+            blockchainAddress: truckPubkey
+        };
+        const timestamp = Date.now();
+        const hash = generateHash({ deviceId: truckId, payload, timestamp });
+
+        const signature = await updateTruckOnChain(truckPubkey, "CLOSED", hash);
+        const newReg = new Event({ deviceId: truckId, payload, timestamp, hash, solanaSignature: signature, status: 'verified' });
+
+        await newReg.save();
+        res.status(201).json(newReg);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Registro de eventos estándar (Ubicación, Sensores)
 app.post('/api/event', async (req, res) => {
     try {
-        const { deviceId, payload } = req.body;
+        const { deviceId, payload, truckPubkey } = req.body;
         const timestamp = Date.now();
-
         const hash = generateHash({ deviceId, payload, timestamp });
+        const signature = await updateTruckOnChain(truckPubkey, payload.doorStatus, hash);
 
-        const newEvent = new Event({
-            deviceId,
-            payload,
-            timestamp,
-            hash,
-            status: 'pending'
-        });
+        const newEvent = new Event({ deviceId, payload, timestamp, hash, solanaSignature: signature, status: 'verified' });
         await newEvent.save();
-
-        try {
-            const signature = await sendHashToSolana(hash);
-
-            newEvent.solanaSignature = signature;
-            newEvent.status = 'verified';
-            await newEvent.save();
-
-            console.log(`✅ Evento verificado en Solana: ${signature.substring(0, 10)}...`);
-        } catch (solErr) {
-            console.error("⚠️ Solana falló, el log queda como 'pending' en DB");
-        }
-
         res.status(201).json(newEvent);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// RUTA PARA VERIFICAR LA INTEGRIDAD DE UN EVENTO
+// RUTA DE LLEGADA DE CAMION
+app.post('/api/arrival', async (req, res) => {
+    try {
+        const { deviceId, truckPubkey } = req.body;
+
+        const previousEvent = await Event.findOne({ deviceId }).sort({ timestamp: -1 });
+        if (!previousEvent) {
+            return res.status(404).json({ message: "No se encontró un evento previo para este camión." });
+        }
+
+        const payload = {
+            ...previousEvent.payload,
+            status: "DELIVERED",
+            location: { lat: 19.4326, lng: -99.1332 },
+            doorStatus: "CLOSED",
+            message: "Entrega finalizada y verificada.",
+            alert: false,
+            description: "Entrega finalizada y verificada en destino."
+        };
+        const timestamp = Date.now();
+        const hash = generateHash({ deviceId, payload, timestamp });
+        const signature = await updateTruckOnChain(truckPubkey, "DELIVERED", hash);
+
+        const finalEvent = new Event({ deviceId, payload, timestamp, hash, solanaSignature: signature, status: 'verified' });
+        await finalEvent.save();
+        res.status(201).json(finalEvent);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Auditoría Cruzada: Compara MongoDB vs Solana (La más importante)
 app.get('/api/verify/:id', async (req, res) => {
     try {
         const event = await Event.findById(req.params.id);
-        if (!event) return res.status(404).send("Evento no encontrado");
+        if (!event) return res.status(404).json({ message: "Evento no encontrado" });
 
-        const dataNow = { deviceId: event.deviceId, payload: event.payload, timestamp: event.timestamp };
-        const currentHash = generateHash(dataNow);
+        let truckPubkey = event.payload.blockchainAddress;
+        if (!truckPubkey || truckPubkey.length < 32) {
+            const firstReg = await Event.findOne({ deviceId: event.deviceId, "payload.blockchainAddress": { $exists: true } });
+            truckPubkey = firstReg ? firstReg.payload.blockchainAddress : null;
+        }
 
-        const isDbIntact = (currentHash === event.hash);
+        const solanaState = await getTruckStateFromSolana(truckPubkey);
+        if (!solanaState) return res.status(404).json({ message: "No hay datos en Solana", checkedPubkey: truckPubkey });
+
+        const recalculatedHash = generateHash({ deviceId: event.deviceId, payload: event.payload, timestamp: event.timestamp });
+        const isIntegrityOk = (recalculatedHash === solanaState.last_event_hash);
 
         res.json({
-            status: isDbIntact ? "🟢 INTEGRIDAD OK" : "🔴 DATOS ALTERADOS",
+            status: isIntegrityOk ? "🟢 INTEGRIDAD TOTAL" : "🔴 DATOS ALTERADOS",
+            match: isIntegrityOk,
             evidence: {
-                dbHash: event.hash,
-                actualHash: currentHash,
+                mongoHash: recalculatedHash,
+                solanaHash: solanaState.last_event_hash,
                 solanaTx: `https://explorer.solana.com/tx/${event.solanaSignature}?cluster=devnet`
-            },
-            message: isDbIntact
-                ? "El registro coincide con la firma digital en Blockchain."
-                : "¡Alerta de seguridad! Los datos en MongoDB han sido manipulados."
+            }
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-//Ruta para obtener todos los eventos
-app.get('/api/events', async (req, res) => {
+// Reconstrucción del historial completo desde la Blockchain
+app.get('/api/fleet/:truckPubkey/reconstruct', async (req, res) => {
     try {
-        const events = await Event.find().sort({ timestamp: -1 });
-        res.json(events);
+        const history = await getTruckHistory(req.params.truckPubkey);
+        res.json({ truckPubkey: req.params.truckPubkey, timeline: history });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// RUTA PARA SIMULAR UN ATAQUE (HACKEO DE TEMPERATURA)
-app.put('/api/event/:id/attack', async (req, res) => {
+// Listado de todos los eventos en DB
+app.get('/api/fleet/all', async (req, res) => {
     try {
-        const { newTemperature } = req.body;
-        const event = await Event.findById(req.params.id);
-
-        if (!event) {
-            return res.status(404).json({ message: "Evento no encontrado" });
-        }
-
-        if (event.payload && event.payload.temp !== undefined) {
-
-            event.payload.temp = newTemperature !== undefined ? newTemperature : 99.9;
-
-            event.markModified('payload');
-
-            await event.save();
-
-            console.log(`¡ALERTA! El evento ${req.params.id} ha sido hackeado localmente.`);
-
-            res.json({
-                message: "¡Ataque simulado! La temperatura ha sido alterada en MongoDB.",
-                details: {
-                    originalHash: event.hash,
-                    newTemp: event.payload.temp
-                },
-                event
-            });
-        } else {
-            res.status(400).json({ message: "No se encontró el campo 'temp' en el payload." });
-        }
+        const fleet = await Event.find().sort({ timestamp: -1 });
+        res.json(fleet);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
-});app.listen(3000, () => console.log(`Server listo en http://localhost:3000`));
+});
+
+// Simular manipulación de DB (Cover-up)
+app.put('/api/event/:id/simulate-coverup', async (req, res) => {
+    try {
+        const event = await Event.findById(req.params.id);
+        if (!event) return res.status(404).json({ message: "No encontrado" });
+
+        event.payload.doorStatus = "CLOSED";
+        event.payload.alert = false;
+        event.markModified('payload');
+        await event.save();
+
+        res.json({ message: "⚠️ ENCUBRIMIENTO SIMULADO en MongoDB." });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.listen(3000, () => console.log(`🚀 Servidor listo en Puerto 3000`));

@@ -1,4 +1,5 @@
-const { Connection, Keypair, Transaction, TransactionInstruction, PublicKey } = require('@solana/web3.js');
+const { Connection, Keypair, Transaction, TransactionInstruction, PublicKey, SystemProgram } = require('@solana/web3.js');
+const borsh = require('borsh');
 const fs = require('fs');
 const path = require('path');
 
@@ -6,68 +7,141 @@ const connection = new Connection("https://api.devnet.solana.com", "confirmed");
 const secretKeyPath = path.resolve(__dirname, '../secret.json');
 
 let payer;
-try {
-    const secretKey = Uint8Array.from(JSON.parse(fs.readFileSync(secretKeyPath, 'utf-8')));
-    payer = Keypair.fromSecretKey(secretKey);
-    console.log("Llave cargada correctamente:", payer.publicKey.toBase58());
-} catch (e) {
-    console.error("Error cargando secret.json");
+const secretKey = Uint8Array.from(JSON.parse(fs.readFileSync(secretKeyPath, 'utf-8')));
+payer = Keypair.fromSecretKey(secretKey);
+
+const MY_PROGRAM_ID = new PublicKey("58mhPm3r43RmifEcrAGdPAHMWTAd1fzWekRB9Sffh6zo");
+
+// --- ESQUEMAS BORSH ---
+class TruckInstruction {
+    constructor(fields) {
+        this.door_status = fields.door_status;
+        this.last_event_hash = fields.last_event_hash;
+        this.timestamp = fields.timestamp;
+    }
 }
 
-/**
- * Registra el Hash en Solana usando el Contrato Custom en Rust
- */
-const sendHashToSolana = async (hash) => {
+class TruckState {
+    constructor(fields) {
+        this.is_initialized = fields.is_initialized;
+        this.door_status = fields.door_status;
+        this.last_event_hash = fields.last_event_hash;
+        this.timestamp = fields.timestamp;
+    }
+}
+
+const truckSchema = new Map([
+    [TruckInstruction, {
+        kind: 'struct',
+        fields: [['door_status', 'u8'], ['last_event_hash', [32]], ['timestamp', 'u64']]
+    }],
+    [TruckState, {
+        kind: 'struct',
+        fields: [['is_initialized', 'u8'], ['door_status', 'u8'], ['last_event_hash', [32]], ['timestamp', 'u64']]
+    }]
+]);
+
+// --- FUNCIONES CORE ---
+
+// 1. ACTUALIZAR (Escritura On-Chain)
+const updateTruckOnChain = async (truckAccountPubkey, doorStatus, hashHex) => {
     try {
-        const myProgramId = new PublicKey("YpK3D3u67DK2fNnFEfVWpWy5XHaEovE833EgpPSQjqs");
+        const hashArray = Array.from(Buffer.from(hashHex, 'hex'));
+        const timestamp = BigInt(Math.floor(Date.now() / 1000));
+        const statusValue = doorStatus === "OPEN_FORCED" ? 2 : (doorStatus === "OPEN" ? 1 : 0);
 
-        const { blockhash } = await connection.getLatestBlockhash('confirmed');
+        const instructionData = new TruckInstruction({
+            door_status: statusValue,
+            last_event_hash: hashArray,
+            timestamp: timestamp
+        });
 
-        const transaction = new Transaction({
-            recentBlockhash: blockhash,
-            feePayer: payer.publicKey
-        }).add(
-            new TransactionInstruction({
+        const dataBuffer = Buffer.from(borsh.serialize(truckSchema, instructionData));
+        const { blockhash } = await connection.getLatestBlockhash();
+
+        const transaction = new Transaction({ recentBlockhash: blockhash, feePayer: payer.publicKey })
+            .add(new TransactionInstruction({
                 keys: [
-                    { pubkey: payer.publicKey, isSigner: true, isWritable: true }
+                    { pubkey: new PublicKey(truckAccountPubkey), isSigner: false, isWritable: true },
+                    { pubkey: payer.publicKey, isSigner: true, isWritable: false },
                 ],
-                programId: myProgramId,
-                data: Buffer.from(hash),
-            })
-        );
+                programId: MY_PROGRAM_ID,
+                data: dataBuffer,
+            }));
 
-        const signature = await connection.sendTransaction(transaction, [payer], { skipPreflight: true });
-        await connection.confirmTransaction(signature, 'confirmed');
+        const signature = await connection.sendTransaction(transaction, [payer]);
+        await connection.confirmTransaction(signature);
         return signature;
     } catch (error) {
-        console.error("Error en el proceso de Solana:", error);
+        console.error("❌ Error en updateTruckOnChain:", error);
         throw error;
     }
 };
 
-/**
- * Recupera el Hash de Solana para auditoría (Lectura de logs del Contrato Rust)
- */
-const getHashFromSolana = async (signature) => {
+// 2. CREAR CUENTA (Inicialización)
+const createTruckAccount = async () => {
+    const truckAccount = Keypair.generate();
+    const space = 42;
+    const lamports = await connection.getMinimumBalanceForRentExemption(space);
+
+    const transaction = new Transaction().add(
+        SystemProgram.createAccount({
+            fromPubkey: payer.publicKey,
+            newAccountPubkey: truckAccount.publicKey,
+            lamports,
+            space,
+            programId: MY_PROGRAM_ID,
+        })
+    );
+
+    const signature = await connection.sendTransaction(transaction, [payer, truckAccount]);
+    await connection.confirmTransaction(signature);
+    return truckAccount.publicKey.toBase58();
+};
+
+// 3. LEER ESTADO ACTUAL (La Verdad de Hoy)
+const getTruckStateFromSolana = async (truckPubkey) => {
     try {
-        const tx = await connection.getTransaction(signature, {
-            commitment: 'confirmed',
-            maxSupportedTransactionVersion: 0
-        });
-
-        if (!tx || !tx.meta) {
-            console.warn("⚠Transacción no encontrada o sin metadatos para la firma:", signature);
-            return "No se encontró evidencia en Blockchain";
-        }
-
-        const logConHash = tx.meta.logMessages.find(log =>
-            log.includes("Hash Notariado") || log.includes("Program log: ")
-        );
-
-        return logConHash ? logConHash : "Log no encontrado";
+        const info = await connection.getAccountInfo(new PublicKey(truckPubkey));
+        if (!info) return null;
+        const state = borsh.deserialize(truckSchema, TruckState, info.data);
+        return {
+            ...state,
+            last_event_hash: Buffer.from(state.last_event_hash).toString('hex'),
+            timestamp: state.timestamp.toString()
+        };
     } catch (error) {
-        return "Error al conectar con la red de Solana";
+        console.error("❌ Error leyendo de Solana:", error);
+        return null;
     }
 };
 
-module.exports = { sendHashToSolana, getHashFromSolana };
+// 4. 🔥 NUEVA: OBTENER HISTORIAL COMPLETO (Sustituye a Mongo para auditorías)
+const getTruckHistory = async (truckPubkey) => {
+    try {
+        const pubkey = new PublicKey(truckPubkey);
+        // Obtenemos todas las firmas (transacciones) de esta cuenta
+        const transactions = await connection.getSignaturesForAddress(pubkey);
+
+        const history = await Promise.all(transactions.map(async (tx) => {
+            const details = await connection.getTransaction(tx.signature, {
+                maxSupportedTransactionVersion: 0
+            });
+
+            return {
+                signature: tx.signature,
+                slot: tx.slot,
+                time: new Date(tx.blockTime * 1000).toLocaleString(),
+                // Aquí podrías incluso decodificar los datos de la instrucción si lo necesitas
+                status: tx.err ? "Error" : "Éxito"
+            };
+        }));
+
+        return history;
+    } catch (error) {
+        console.error("❌ Error obteniendo historial:", error);
+        return [];
+    }
+};
+
+module.exports = { updateTruckOnChain, createTruckAccount, getTruckStateFromSolana, getTruckHistory };
