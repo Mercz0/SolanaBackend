@@ -41,9 +41,7 @@ const truckSchema = new Map([
     }]
 ]);
 
-// --- FUNCIONES CORE ---
-
-// 1. ACTUALIZAR (Escritura On-Chain)
+// 1. ACTUALIZAR
 const updateTruckOnChain = async (truckAccountPubkey, doorStatus, hashHex) => {
     try {
         const hashArray = Array.from(Buffer.from(hashHex, 'hex'));
@@ -78,7 +76,7 @@ const updateTruckOnChain = async (truckAccountPubkey, doorStatus, hashHex) => {
     }
 };
 
-// 2. CREAR CUENTA (Inicialización)
+// 2. CREAR CUENTA
 const createTruckAccount = async () => {
     const truckAccount = Keypair.generate();
     const space = 42;
@@ -99,7 +97,7 @@ const createTruckAccount = async () => {
     return truckAccount.publicKey.toBase58();
 };
 
-// 3. LEER ESTADO ACTUAL (La Verdad de Hoy)
+// 3. LEER ESTADO ACTUAL
 const getTruckStateFromSolana = async (truckPubkey) => {
     try {
         const info = await connection.getAccountInfo(new PublicKey(truckPubkey));
@@ -116,11 +114,10 @@ const getTruckStateFromSolana = async (truckPubkey) => {
     }
 };
 
-// 4. 🔥 NUEVA: OBTENER HISTORIAL COMPLETO (Sustituye a Mongo para auditorías)
+// 4. OBTENER HISTORIAL COMPLETO
 const getTruckHistory = async (truckPubkey) => {
     try {
         const pubkey = new PublicKey(truckPubkey);
-        // Obtenemos todas las firmas (transacciones) de esta cuenta
         const transactions = await connection.getSignaturesForAddress(pubkey);
 
         const history = await Promise.all(transactions.map(async (tx) => {
