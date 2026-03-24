@@ -15,8 +15,8 @@ app.use(express.json());
 app.use(cors());
 
 mongoose.connect('mongodb://127.0.0.1:27017/iot-guard')
-    .then(() => console.log("✅ MongoDB Conectado"))
-    .catch(err => console.error("❌ Error Mongo:", err));
+    .then(() => console.log("MongoDB Conectado"))
+    .catch(err => console.error("Error Mongo:", err));
 
 // Registro inicial del camión y creación de cuenta en Solana
 app.post('/api/fleet/register', async (req, res) => {
@@ -154,10 +154,10 @@ app.put('/api/event/:id/simulate-coverup', async (req, res) => {
         event.markModified('payload');
         await event.save();
 
-        res.json({ message: "⚠️ ENCUBRIMIENTO SIMULADO en MongoDB." });
+        res.json({ message: "⚠ENCUBRIMIENTO SIMULADO en MongoDB." });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.listen(3000, () => console.log(`🚀 Servidor listo en Puerto 3000`));
+app.listen(3000, () => console.log(`Servidor listo en Puerto 3000`));

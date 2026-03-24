@@ -1,14 +1,20 @@
 const { Connection, Keypair, Transaction, TransactionInstruction, PublicKey, SystemProgram } = require('@solana/web3.js');
 const borsh = require('borsh');
-const fs = require('fs');
-const path = require('path');
 
 const connection = new Connection("https://api.devnet.solana.com", "confirmed");
-const secretKeyPath = path.resolve(__dirname, '../secret.json');
-
+require('dotenv').config();
 let payer;
-const secretKey = Uint8Array.from(JSON.parse(fs.readFileSync(secretKeyPath, 'utf-8')));
-payer = Keypair.fromSecretKey(secretKey);
+try {
+    const secretKeyString = process.env.SOLANA_SECRET_KEY;
+    if (!secretKeyString) throw new Error("Falta SOLANA_SECRET_KEY en el .env");
+
+    const secretKey = Uint8Array.from(JSON.parse(secretKeyString));
+    payer = Keypair.fromSecretKey(secretKey);
+    console.log("Wallet de administración cargada desde .env");
+} catch (error) {
+    console.error("Error cargando la wallet:", error.message);
+    process.exit(1);
+}
 
 const MY_PROGRAM_ID = new PublicKey("58mhPm3r43RmifEcrAGdPAHMWTAd1fzWekRB9Sffh6zo");
 
@@ -71,7 +77,7 @@ const updateTruckOnChain = async (truckAccountPubkey, doorStatus, hashHex) => {
         await connection.confirmTransaction(signature);
         return signature;
     } catch (error) {
-        console.error("❌ Error en updateTruckOnChain:", error);
+        console.error("Error en updateTruckOnChain:", error);
         throw error;
     }
 };
@@ -109,7 +115,7 @@ const getTruckStateFromSolana = async (truckPubkey) => {
             timestamp: state.timestamp.toString()
         };
     } catch (error) {
-        console.error("❌ Error leyendo de Solana:", error);
+        console.error("Error leyendo de Solana:", error);
         return null;
     }
 };
@@ -129,14 +135,13 @@ const getTruckHistory = async (truckPubkey) => {
                 signature: tx.signature,
                 slot: tx.slot,
                 time: new Date(tx.blockTime * 1000).toLocaleString(),
-                // Aquí podrías incluso decodificar los datos de la instrucción si lo necesitas
                 status: tx.err ? "Error" : "Éxito"
             };
         }));
 
         return history;
     } catch (error) {
-        console.error("❌ Error obteniendo historial:", error);
+        console.error("Error obteniendo historial:", error);
         return [];
     }
 };

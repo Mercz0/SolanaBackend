@@ -1,0 +1,18 @@
+# Secretos y Seguridad
+.env
+secret.json
+secretitos.json
+*.pem
+
+# Dependencias
+node_modules/
+
+# Logs y Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Sistema Operativo y Editores
+.DS_Store
+.vscode/
+.idea/
